@@ -1,6 +1,7 @@
 # extract approximating LoRA by svd from two FLUX models
 # The code is based on https://github.com/cloneofsimo/lora/blob/develop/lora_diffusion/cli_svd.py
 # Thanks to cloneofsimo!
+"""主要功能是从两个FLUX模型中通过SVD（奇异值分解）提取近似LoRA（Low-Rank Adaptation）。该代码基于https://github.com/cloneofsimo/lora/blob/develop/lora_diffusion/cli_svd.py，并对其中的一些功能进行了调整和优化。代码的主要目的是计算两个模型之间的差异，并通过SVD分解提取LoRA权重，最后将这些权重保存到指定的文件中。"""
 
 import argparse
 import json
@@ -26,6 +27,16 @@ from comfy.utils import ProgressBar
 
 
 def save_to_file(file_name, state_dict, metadata, dtype):
+    """  
+  - `file_name`: 文件名。
+  - `state_dict`: 要保存的状态字典。
+  - `metadata`: 元数据信息。
+  - `dtype`: 数据类型，可以是`torch.float`, `torch.float16`, 或 `torch.bfloat16`。
+- **内部运行逻辑**:
+  - 如果提供了数据类型，则将状态字典中的所有张量转换为指定的数据类型。
+  - 使用`safetensors.torch.save_file`将状态字典保存到指定文件中，并包含元数据信息。
+- **输出**: 无返回值，直接将结果保存到文件。
+    """
     if dtype is not None:
         for key in list(state_dict.keys()):
             if type(state_dict[key]) == torch.Tensor:
@@ -47,6 +58,35 @@ def svd(
     no_metadata=False,
     mem_eff_safe_open=False,
 ):
+    """
+  - **输入**:
+  model_org (str): 原始模型的路径。
+
+model_tuned (str): 调整后模型的路径。
+
+save_to (str): 保存LoRA权重的路径。
+
+dim (int): LoRA的维度（秩）。
+
+device (str): 计算设备（如 cuda 或 cpu）。
+
+store_device (str): 存储设备（如 cpu 或 cuda）。
+
+save_precision (str): 保存时的精度（如 float, fp16, bf16）。
+
+clamp_quantile (float): 用于裁剪的分位数值。
+
+min_diff (float): 最小差异值。
+
+no_metadata (bool): 是否保存元数据。
+
+mem_eff_safe_open (bool): 是否使用内存高效的 safe_open。
+  - 定义了一个内部函数`str_to_dtype`用于将字符串转换为对应的PyTorch数据类型。
+  - 打开原始模型和微调后的模型，读取并处理每个键对应的张量数据，计算它们之间的差异。
+  - 对每个差异矩阵进行SVD分解，提取LoRA权重，并进行必要的裁剪处理（使用分位数进行裁剪）。
+  - 将提取的LoRA权重重新组织成适合存储的格式，并添加元数据信息后保存到指定路径的文件中。
+- **输出**: 返回保存的LoRA权重文件路径。
+    """
     def str_to_dtype(p):
         if p == "float":
             return torch.float
@@ -151,6 +191,11 @@ def svd(
 
 
 def setup_parser() -> argparse.ArgumentParser:
+    """
+- **输入**: 无
+- **内部运行逻辑**:
+  - 使用`argparse.ArgumentParser`创建一个命令行参数解析器，并添加多个参数选项以允许用户自定义执行过程中的各种配置选项（如精度、设备等）。
+- **输出**: 返回配置好的参数解析器对象。"""
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--save_precision",

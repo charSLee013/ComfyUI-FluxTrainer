@@ -10,6 +10,16 @@
 # - Use of fused optimizer and grad_hook for efficient gradient processing
 # - Per-block fused optimizer instances
 
+"""
+主要用于训练模型，并支持在CPU和GPU之间交换块以节省内存。文件中包含的主要功能包括：
+
+- 在前向和后向传递过程中使用CPU进行卸载。
+- 使用融合优化器和grad_hook进行高效的梯度处理。
+- 每个块的融合优化器实例。
+
+文件中定义了一个主要的`train`函数，该函数负责整个训练流程。此外，还定义了用于设置命令行参数的`setup_parser`函数。
+"""
+
 import argparse
 import copy
 import math
@@ -48,6 +58,25 @@ from .library.custom_train_functions import apply_masked_loss, add_custom_train_
 
 
 def train(args):
+    """
+**输入:**
+- `args`: 一个命名空间对象，包含所有训练相关的配置参数。
+
+**内部运行逻辑:**
+1. 验证和准备训练参数。
+2. 设置日志记录配置。
+3. 准备数据集并初始化缓存策略。
+4. 准备加速器（accelerator）和其他训练所需组件（如优化器、学习率调度器等）。
+5. 加载VAE、CLIP-L、T5XXL等模型并初始化它们的状态。
+6. 设置缓存文本编码输出策略。
+7. 准备数据加载器（dataloader）并计算总训练步数。
+8. 初始化模型并将其移动到相应的设备上（CPU或GPU）。
+9. 开始实际的训练循环，包括前向传递、损失计算、反向传递和优化步骤。
+
+**输出:**
+- 无直接返回值，但会在指定的步数或周期结束后保存模型状态。
+
+    """
     train_util.verify_training_args(args)
     train_util.prepare_dataset_args(args, True)
     # sdxl_train_util.verify_sdxl_training_args(args)
@@ -741,6 +770,17 @@ def train(args):
 
 
 def setup_parser() -> argparse.ArgumentParser:
+    """
+**输入:**
+- 无直接输入参数。
+
+**内部运行逻辑:**
+1. 创建一个命令行参数解析器对象（ArgumentParser）。
+2. 添加各种类型的参数到解析器中，包括日志配置、数据集配置、训练配置等。
+
+**输出:**
+- 返回一个配置好的ArgumentParser对象，可用于解析命令行输入。
+"""
     parser = argparse.ArgumentParser()
 
     add_logging_arguments(parser)

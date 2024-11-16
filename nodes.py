@@ -1,3 +1,5 @@
+"""该代码文件定义了一系列与Flux模型训练相关的类和函数，用于实现模型的初始化、训练循环、验证、保存、提取LoRA权重等功能。这些类和函数主要用于ComfyUI框架中进行深度学习模型的训练。"""
+
 import os
 import torch
 from torchvision import transforms
@@ -34,6 +36,14 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 class FluxTrainModelSelect:
+    """- **功能**: 选择用于训练的模型文件。
+* 输入
+  - `transformer`: UNET模型文件路径。
+  - `vae`: VAE模型文件路径。
+  - `clip_l`: CLIP模型文件路径。
+  - `t5`: T5模型文件路径。
+  - `lora_path`: 可选的预训练LoRA权重文件路径。
+- **输出**: 包含所有选定模型路径的字典。"""
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
@@ -53,6 +63,9 @@ class FluxTrainModelSelect:
     CATEGORY = "FluxTrainer"
 
     def loadmodel(self, transformer, vae, clip_l, t5, lora_path=""):
+        """输入: transformer, vae, clip_l, t5, lora_path
+        内部逻辑: 获取每个组件的完整路径，并将它们存储在一个字典中。
+        输出: 包含模型路径的字典。"""
         
         transformer_path = folder_paths.get_full_path("unet", transformer)
         vae_path = folder_paths.get_full_path("vae", vae)
@@ -70,6 +83,27 @@ class FluxTrainModelSelect:
         return (flux_models,)
 
 class TrainDatasetGeneralConfig:
+    """主要功能
+        - **功能**: 配置数据集的一般参数。
+    - **输入**:
+    - `color_aug`: 是否启用弱颜色增强。
+    当开启颜色增强时，图像的色调每次都会随机改变。LoRA 从中学到的预期是颜色色调会有轻微的范围。
+    - `flip_aug`: 是否启用水平翻转增强。
+    如果此选项开启，图片将随机水平翻转。它可以学习左右角度，这在您想学习对称人物和物体时很有用。
+    - `shuffle_caption`: 是否在训练时打乱标签顺序。
+    如果训练图像有标题，大多数标题都是以逗号分隔的单词形式编写的，例如“黑猫，吃，坐着”。“随机打乱标题”选项会每次随机改变这些逗号分隔的单词的顺序。
+    标题中的词语通常越靠近开头，其权重就越大。因此，如果词序固定，反向词语可能学得不好，正向词语可能与训练图像产生意想不到的关联。希望可以通过每次加载图像时重新排序词语来纠正这种偏差。
+    此选项在标题不是以逗号分隔而是写成句子时没有意义。
+    在这里，“单词”指的是由逗号分隔的文本片段。无论分隔的文本包含多少个单词，它都算作“一个单词”。
+    在“黑猫，吃，坐”的情况下，“黑猫”是一个词。
+    - `caption_dropout_rate`: 标签丢弃率，范围在0.0到1.0之间。
+    它类似于每 n 个 epoch 进行 Dropout，但你可以在不使用标题的情况下学习“无标题的图像”，在整个学习过程中的一定比例中不使用标题。
+    这里可以设置不带标题的图片百分比。0 是“学习时始终使用标题”的设置，1 是“学习时从不使用标题”的设置。
+    它是随机的，哪些图像被学习为“无标题图像”。
+    例如，如果读取 20 张图像，每张图像读取 50 次，并且仅进行 1 个 epoch 的 LoRA 学习，则图像学习的总次数为 20 张图像 x 50 次 x 1 个 epoch = 1000 次。此时，如果设置标题丢失率（Rate of caption dropout）为 0.1，则 1000 次 x 0.1 = 100 次将作为“无标题图像”进行学习。
+    - `alpha_mask`: 是否使用alpha通道作为掩码进行训练。
+    
+    - **输出**: 包含配置信息的JSON对象。"""
     queue_counter = 0
     @classmethod
     def IS_CHANGED(s, reset_on_queue=False, **kwargs):
@@ -98,6 +132,13 @@ class TrainDatasetGeneralConfig:
     CATEGORY = "FluxTrainer"
 
     def create_config(self, shuffle_caption, caption_dropout_rate, color_aug, flip_aug, alpha_mask, reset_on_queue=False, caption_extension=".txt"):
+        """输入: shuffle_caption, caption_dropout_rate, color_aug, flip_aug, alpha_mask, reset_on_queue, caption_extension
+
+内部逻辑: 创建一个包含数据集一般设置的JSON对象。
+
+输出: 包含数据集设置的JSON对象。
+
+使用时机: 在配置数据集时使用。"""
         
         dataset = {
            "general": {
@@ -119,7 +160,11 @@ class TrainDatasetGeneralConfig:
         return (dataset_config,)
 
 class TrainDatasetRegularization:
-        
+    """- **功能**: 创建正则化子集配置。
+  - **输入**:
+  - `dataset_path`: 数据集路径，根目录是'ComfyUI'或'ComfyUI_windows_portable'（对于Windows便携版）。
+  - `class_tokens`: 类别标记词（触发词），如果指定，将在每个标签前添加此标记词；如果没有标签，则单独使用此标记词。
+  - `num_repeats`: 数据集重复次数以增加一个epoch中的数据量。"""
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
@@ -145,7 +190,15 @@ class TrainDatasetRegularization:
        
         return reg_subset,
     
-class TrainDatasetAdd:
+class TrainDatasetAdd:  
+    """主要功能
+添加数据集配置，包括分辨率、批量大小、数据集路径等。
+
+**参数说明:**
+- **dataset_config**: 已存在的数据集配置 JSON 对象。
+- **width**, **height**: 图像的基本分辨率宽度和高度（最小值为64）。
+- **batch_size**: 批处理大小（最小值为1）。
+- **dataset_path**, **class_tokens**, etc.: 数据集路径、类别标记等配置信息。"""
     def __init__(self):
         self.previous_dataset_signature = None
         
@@ -225,6 +278,18 @@ class TrainDatasetAdd:
         return json.dumps(dataset, sort_keys=True)
 
 class OptimizerConfig:
+    """这些类主要用于配置不同类型的优化器参数
+输入: min_snr_gamma, extra_optimizer_args, **kwargs
+- Min SNR gamma 
+在 LoRA 学习中，通过在训练图像上添加各种强度的噪声来进行学习（关于此的详细信息省略），但根据放置的噪声强度的差异，学习将通过接近或远离学习目标来保持稳定。因此，引入了 Min SNR gamma 来补偿这一点。特别是当学习带有少量噪声的图像时，可能会与目标偏差很大，因此尝试抑制这种跳跃。
+我不会深入细节，因为这很令人困惑，但你可以将此值设置为 0 到 20，默认为 0。
+根据论文，最佳值是 5。
+
+内部逻辑: 创建一个包含优化器设置的字典。
+输出: 包含优化器设置的字典。
+使用时机: 在配置优化器时使用。
+
+    """
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
@@ -250,6 +315,17 @@ class OptimizerConfig:
         return (kwargs,)
 
 class OptimizerConfigAdafactor:
+    """主要功能
+配置Adafactor优化器设置。
+
+函数 create_config
+输入: relative_step, scale_parameter, warmup_init, clip_threshold, min_snr_gamma, extra_optimizer_args, **kwargs
+
+内部逻辑: 创建一个包含Adafactor优化器设置的字典。
+
+输出: 包含Adafactor优化器设置的字典。
+
+使用时机: 在配置Adafactor优化器时使用。"""
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
@@ -287,6 +363,17 @@ class OptimizerConfigAdafactor:
         return (kwargs,)
 
 class OptimizerConfigProdigy:
+    """主要功能
+配置Prodigy优化器设置。
+
+函数 create_config
+输入: weight_decay, decouple, min_snr_gamma, use_bias_correction, extra_optimizer_args, **kwargs
+
+内部逻辑: 创建一个包含Prodigy优化器设置的字典。
+
+输出: 包含Prodigy优化器设置的字典。
+
+使用时机: 在配置Prodigy优化器时使用。"""
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
@@ -322,6 +409,129 @@ class OptimizerConfigProdigy:
         return (kwargs,)    
 
 class InitFluxLoRATraining:
+    """主要功能
+初始化Flux LoRA模型的训练。主要涉及模型选择、数据集配置、优化器设置和输出目录等信息。每个参数都有其特定的作用，用于控制训练过程中的各个方面。
+函数内部处理了缓存清理、磁盘空间检查以及各种配置的初始化，并最终返回一个包含网络训练器和训练循环的字典对象。
+
+输入: 
+- flux_models
+包含训练所需的模型路径的字典，包括transformer、vae、clip_l、t5和可选的lora_path。
+
+- dataset
+数据集配置信息，通常包含数据增强设置和其他数据集相关的参数。
+
+- optimizer_settings
+优化器设置参数，例如优化器类型、学习率调度器等。
+
+- output_name
+输出模型文件的基本名称
+
+- output_dir
+模型输出目录路径。默认为 "flux_trainer_output"，根目录是 'ComfyUI' 文件夹，在 Windows 移动版中是 'ComfyUI_windows_portable'。
+
+- network_dim
+网络维度，用于定义LoRA网络的维度。
+
+- network_alpha
+网络alpha，用于定义LoRA网络的alpha值。
+
+- learning_rate
+指定学习率。"学习"是指改变神经网络中线路的厚度（权重），以便制作出与给定图片完全相同的图片，但每次给定一张图片，线路都会改变。如果你只调整给定的图片，将无法绘制其他任何图片。
+
+- max_train_steps
+说明: 最大训练步数，定义训练过程中的最大步数。
+
+- apply_t5_attn_mask
+是否应用t5注意力掩码。
+
+- cache_latents
+缓存潜变量的方式，可以选择磁盘、内存或禁用。
+
+- cache_text_encoder_outputs
+缓存文本编码器输出的方式，可以选择磁盘、内存或禁用。
+
+- split_mode
+是否使用分割模式，实验性功能。
+
+- weighting_scheme
+权重方案，定义如何计算权重
+
+- logit_mean
+logit_normal权重方案的均值。
+
+- logit_std
+logit_normal权重方案的标准差。
+
+- mode_scale
+模式权重方案的缩放
+
+- timestep_sampling
+时间步采样方法，定义如何采样时间步。
+
+- sigmoid_scale
+sigmoid时间步采样的缩放因子。
+
+- model_prediction_type
+模型预测类型，定义如何解释和处理模型预测。
+
+- guidance_scale
+指导缩放，用于Flux训练。
+
+- discrete_flow_shift
+Euler离散调度器的偏移。
+
+- highvram
+是否使用高VRAM模式。
+
+- fp8_base
+是否使用fp8作为基础模型。
+
+- gradient_dtype
+梯度数据类型，定义训练过程中使用的数据类型。
+
+- save_dtype
+保存检查点的数据类型，定义保存检查点时使用的数据类型。
+
+- attention_mode
+注意力模式，定义如何计算注意力。
+
+- sample_prompts
+验证样本提示，用于验证过程中的提示。
+
+- additional_args
+额外的训练命令参数，用于传递额外的训练参数。
+
+- resume_args
+恢复训练的参数，用于恢复训练过程。
+
+- train_text_encoder
+是否训练文本编码器，定义训练过程中是否训练文本编码器。
+
+- clip_l_lr
+clip_l文本编码器的学习率。
+
+- T5_lr
+T5文本编码器的学习率。
+
+- block_args
+限制LoRA中使用的块，定义哪些块将被用于LoRA训练。
+
+- gradient_checkpointing
+是否使用梯度检查点，定义是否启用梯度检查点以及是否使用CPU卸载。
+
+- prompt
+提示信息，用于传递额外的提示信息。
+
+- extra_pnginfo
+额外的PNG信息，用于传递额外的PNG信息。
+
+
+
+内部逻辑: 初始化训练环境，配置模型和优化器，并开始训练。
+
+输出: 训练器对象、训练周期数、训练参数。
+
+使用时机: 在开始LoRA模型训练时使用。"""
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
@@ -376,6 +586,136 @@ class InitFluxLoRATraining:
     def init_training(self, flux_models, dataset, optimizer_settings, sample_prompts, output_name, attention_mode, 
                       gradient_dtype, save_dtype, split_mode, additional_args=None, resume_args=None, train_text_encoder='disabled', 
                       block_args=None, gradient_checkpointing="enabled", prompt=None, extra_pnginfo=None, clip_l_lr=0, T5_lr=0, **kwargs,):
+        """* 输入
+flux_models: Flux模型配置，包含模型的路径和其他相关信息。
+
+dataset: 数据集配置，包含数据集的路径、类标记、重复次数等信息。
+
+optimizer_settings: 优化器设置，包含优化器类型、学习率调度器、梯度裁剪等信息。
+
+output_name: 输出模型的名称。
+
+output_dir: 输出目录的路径。
+
+network_dim: 网络维度，用于定义LoRA网络的维度。
+
+network_alpha: 网络alpha，用于定义LoRA网络的alpha值。
+
+learning_rate: 学习率，用于定义训练过程中的学习率。
+
+max_train_steps: 最大训练步数，定义训练过程中的最大步数。
+
+apply_t5_attn_mask: 是否应用t5注意力掩码。
+
+cache_latents: 缓存潜变量的方式，可以选择磁盘、内存或禁用。
+
+cache_text_encoder_outputs: 缓存文本编码器输出的方式，可以选择磁盘、内存或禁用。
+
+split_mode: 是否使用分割模式，实验性功能。
+
+weighting_scheme: 权重方案，定义如何计算权重。
+
+logit_mean: logit_normal权重方案的均值。
+
+logit_std: logit_normal权重方案的标准差。
+
+mode_scale: 模式权重方案的缩放。
+
+timestep_sampling: 时间步采样方法，定义如何采样时间步。
+
+sigmoid_scale: sigmoid时间步采样的缩放因子。
+
+model_prediction_type: 模型预测类型，定义如何解释和处理模型预测。
+
+guidance_scale: 指导缩放，用于Flux训练。
+
+discrete_flow_shift: Euler离散调度器的偏移。
+
+highvram: 是否使用高VRAM模式。
+
+fp8_base: 是否使用fp8作为基础模型。
+
+gradient_dtype: 梯度数据类型，定义训练过程中使用的数据类型。
+
+save_dtype: 保存检查点的数据类型，定义保存检查点时使用的数据类型。
+
+attention_mode: 注意力模式，定义如何计算注意力。
+
+sample_prompts: 验证样本提示，用于验证过程中的提示。
+
+additional_args: 额外的训练命令参数，用于传递额外的训练参数。
+
+resume_args: 恢复训练的参数，用于恢复训练过程。
+
+train_text_encoder: 是否训练文本编码器，定义训练过程中是否训练文本编码器。
+
+clip_l_lr: clip_l文本编码器的学习率。
+
+T5_lr: T5文本编码器的学习率。
+
+block_args: 限制LoRA中使用的块，定义哪些块将被用于LoRA训练。
+
+gradient_checkpointing: 是否使用梯度检查点，定义是否启用梯度检查点以及是否使用CPU卸载。
+
+prompt: 提示信息，用于传递额外的提示信息。
+
+extra_pnginfo: 额外的PNG信息，用于传递额外的PNG信息。
+
+* 内部逻辑
+初始化训练环境:
+
+创建输出目录。
+
+检查磁盘空间是否足够。
+
+加载数据集配置:
+
+将数据集配置转换为TOML格式。
+
+解析命令行参数:
+
+解析额外的训练命令参数。
+
+配置缓存选项:
+
+根据缓存选项配置缓存潜变量和文本编码器输出。
+
+处理验证样本提示:
+
+将验证样本提示分割为多个提示。
+
+配置模型和优化器:
+
+创建包含模型和优化器配置的字典。
+
+根据注意力模式、梯度数据类型和保存数据类型更新配置。
+
+如果训练文本编码器，设置文本编码器的学习率。
+
+处理网络参数:
+
+处理额外的网络参数。
+
+保存训练参数:
+
+将训练参数保存为JSON文件。
+
+保存工作流:
+
+将工作流保存为JSON文件。
+
+初始化训练器:
+
+初始化FluxNetworkTrainer对象。
+
+开始训练。
+
+* 输出
+训练器对象: 包含训练器和训练循环的对象。
+
+训练周期数: 训练的总周期数。
+
+训练参数: 包含所有训练参数的对象。"""
         mm.soft_empty_cache()
         
         output_dir = os.path.abspath(kwargs.get("output_dir"))
@@ -579,6 +919,23 @@ class InitFluxTraining:
 
     def init_training(self, flux_models, optimizer_settings, dataset, sample_prompts, output_name, 
                       attention_mode, gradient_dtype, save_dtype, optimizer_fusing, additional_args=None, resume_args=None, **kwargs,):
+        """flux_models: Flux模型配置，包含模型的路径和其他相关信息。
+
+optimizer_settings: 优化器设置，包含优化器类型、学习率调度器、梯度裁剪等信息。
+
+dataset: 数据集配置，包含数据集的路径、类标记、重复次数等信息。
+
+sample_prompts: 验证样本提示，用于验证过程中的提示。
+
+output_name: 输出模型的名称。
+
+attention_mode: 注意力模式，定义如何计算注意力。
+
+gradient_dtype: 梯度数据类型，定义训练过程中使用的数据类型。
+
+save_dtype: 保存检查点的数据类型，定义保存检查点时使用的数据类型。
+
+optimizer_fusing: 优化器融合方式"""
         mm.soft_empty_cache()
 
         output_dir = os.path.abspath(kwargs.get("output_dir"))
@@ -693,6 +1050,59 @@ class InitFluxTraining:
         return (trainer, epochs_count, args)
 
 class InitFluxTrainingFromPreset:
+    """
+    **参数说明:**
+
+1. **flux_models**:
+   - **类型**: `TRAIN_FLUX_MODELS`
+   - **描述**: 包含训练所需的模型路径的字典，包括transformer、vae、clip_l、t5和可选的lora_path。
+   - **输入**: 必需
+
+2. **dataset_settings**:
+   - **类型**: `TOML_DATASET`
+   - **描述**: 数据集设置信息，通常以 TOML 格式存储。
+   - **输入**: 必需
+
+3. **preset_args**:
+   - **类型**: `KOHYA_ARGS`
+   - **描述**: 预设的训练参数，通常包含优化器设置和其他训练配置。
+   - **输入**: 必需
+
+4. **output_name**:
+   - **类型**: `STRING`
+   - **默认值**: `"flux"`
+   - **描述**: 输出模型文件的基本名称。
+
+5. **output_dir**:
+   - **类型**: `STRING`
+   - **默认值**: `"flux_trainer_output"`
+   - 描述: 模型输出目录路径。默认为 `"flux_trainer_output"`，根目录是 `'ComfyUI'` 文件夹。
+
+6. **sample_prompts**:
+   - 类型: `STRING`
+   - 默认值: `"illustration of a kitten | photograph of a turtle"`
+   - 描述: 验证样本提示，多个提示用 `|` 分隔。
+
+* 内部运行逻辑
+
+初始化训练环境:
+创建输出目录。
+检查磁盘空间是否足够。
+加载数据集配置:
+将数据集配置转换为TOML格式。
+解析命令行参数:
+解析预设参数。
+处理验证样本提示:
+将验证样本提示分割为多个提示。
+配置模型和优化器:
+创建包含模型和优化器配置的字典。
+根据注意力模式、梯度数据类型和保存数据类型更新配置。
+保存训练参数:
+将训练参数保存为JSON文件。
+初始化训练器:
+初始化FluxNetworkTrainer对象。
+开始训练。
+    """
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
@@ -769,6 +1179,38 @@ class InitFluxTrainingFromPreset:
         return (trainer, epochs_count, final_output_path, args)
     
 class FluxTrainLoop:
+    """**参数说明:**
+
+1. **network_trainer**:
+   - **类型**: `NETWORKTRAINER`
+   - **描述**: 包含网络训练器和训练循环的字典对象。
+   - **输入**: 必需
+
+2. **steps**:
+   - **类型**: `INT`
+   - **默认值**: `1`
+   - 范围: `[1, 10000]`
+   - 步长: `1`
+   - 描述: 训练步数，用于指定在训练过程中进行验证或保存的步数点。
+
+* 内部运行逻辑
+1. 初始化训练环境:
+获取训练器和训练循环对象。
+
+2. 设置目标全局步数:
+计算目标全局步数，即当前全局步数加上训练步数。
+
+3. 创建进度条:
+创建一个进度条，用于显示训练进度。
+
+4. 执行训练循环:
+执行指定步数的训练循环。
+5. 更新进度条。
+检查全局步数是否达到最大训练步数。
+
+6. 返回训练器和当前全局步数:
+返回更新后的训练器对象和当前全局步数。
+"""
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
@@ -812,6 +1254,49 @@ class FluxTrainLoop:
         return (trainer, network_trainer.global_step)
 
 class FluxTrainAndValidateLoop:
+    """**参数说明:**
+
+1. **network_trainer**:
+   - **类型**: `NETWORKTRAINER`
+   - **描述**: 包含网络训练器和训练循环的字典对象。
+   - **输入**: 必需
+
+2. **validate_at_steps**:
+   - **类型**: `INT`
+   - **默认值**: `250`
+   - 范围: `[1, 10000]`
+   - 步长: `1`
+   - 描述: 在训练过程中进行验证的步数点。
+
+3. **save_at_steps**:
+   - **类型**: `INT`
+   - **默认值**: `250`
+   - 范围: `[1, 10000]`
+   - 步长: `1`
+   - 描述: 在训练过程中进行保存的步数点。
+
+4. **validation_settings**:
+   - **类型**: `VALSETTINGS`（可选）
+   - 描述: 验证设置信息，包含验证相关的配置参数。   
+
+* 内部运行逻辑
+1. 初始化训练环境:
+获取训练器和训练循环对象。
+2. 设置目标全局步数:
+计算目标全局步数，即最大训练步数。
+3. 创建进度条:
+创建一个进度条，用于显示训练进度。
+4. 执行训练循环:
+执行训练循环，直到达到最大训练步数。
+计算下一个验证步数和保存步数。
+更新进度条。
+检查全局步数是否达到验证步数或保存步数。
+5. 验证和保存模型:
+如果达到验证步数，执行验证。
+如果达到保存步数，保存模型。
+6. 返回训练器和当前全局步数:
+返回更新后的训练器对象和当前全局步数。
+   """
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
@@ -892,6 +1377,43 @@ class FluxTrainAndValidateLoop:
         print("Saving at step:", network_trainer.global_step)
 
 class FluxTrainSave:
+    """FluxTrainSave 类提供了一个全面的框架，用于保存训练模型。通过配置训练器、是否保存整个模型状态以及是否将LoRA模型复制到comfy lora文件夹
+1. **network_trainer**:
+   - **类型**: `NETWORKTRAINER`
+   - **描述**: 包含网络训练器和训练循环的字典对象。
+   - **输入**: 必需
+
+2. **save_at_steps**:
+   - **类型**: `INT`
+   - **默认值**: `250`
+   - 范围: `[1, 10000]`
+   - 步长: `1`
+   - 描述: 在训练过程中进行保存的步数点。
+   
+* 内部运行逻辑
+1. 初始化训练环境:
+获取训练器对象。
+
+2. 获取当前全局步数:
+获取当前训练过程中的全局步数。
+
+3. 保存模型:
+根据当前全局步数生成检查点名称。
+保存模型权重。
+
+4. 删除旧的检查点:
+计算需要删除的旧检查点步数。
+删除旧的检查点文件。
+
+5. 保存模型状态:
+如果 save_state 为 True，保存整个模型状态。
+
+6. 复制LoRA模型到comfy lora文件夹:
+如果 copy_to_comfy_lora_folder 为 True，将LoRA模型复制到comfy lora文件夹。
+
+7. 返回训练器、LoRA路径和当前全局步数:
+返回更新后的训练器对象、LoRA路径和当前全局步数。
+   """
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
@@ -933,6 +1455,49 @@ class FluxTrainSave:
         return (network_trainer, lora_path, global_step)
 
 class FluxTrainSaveModel:
+    """* 参数详细说明
+1. network_trainer:
+
+类型: NETWORKTRAINER
+
+说明: 网络训练器对象，包含训练器和训练循环的对象。
+
+2. copy_to_comfy_model_folder:
+
+类型: BOOLEAN
+
+默认值: False
+
+说明: 是否将LoRA模型复制到comfy lora文件夹，以便在其他地方使用。
+
+3. end_training:
+
+类型: BOOLEAN
+
+默认值: False
+
+说明: 是否结束训练，如果为 True，则在保存模型后结束训练。
+
+* 内部逻辑
+1. 初始化训练环境:
+获取训练器对象。
+
+2. 获取当前全局步数:
+获取当前训练过程中的全局步数。
+
+3. 保存模型:
+根据当前全局步数生成检查点名称。
+保存模型权重。
+
+4. 复制LoRA模型到comfy lora文件夹:
+如果 copy_to_comfy_model_folder 为 True，将LoRA模型复制到comfy lora文件夹。
+
+5. 结束训练:
+如果 end_training 为 True，结束训练。
+
+6. 返回训练器、模型路径和当前全局步数:
+返回更新后的训练器对象、模型路径和当前全局步数。
+"""
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
@@ -977,6 +1542,44 @@ class FluxTrainSaveModel:
         return (network_trainer, model_path, global_step)
     
 class FluxTrainEnd:
+    """* 参数详细说明
+network_trainer:
+
+类型: NETWORKTRAINER
+
+说明: 网络训练器对象，包含训练器和训练循环的对象。
+
+save_state:
+
+类型: BOOLEAN
+
+默认值: True
+
+说明: 是否保存整个模型状态，包括模型的权重和其他相关信息。
+
+* 内部逻辑
+1. 初始化训练环境:
+获取训练器和训练循环对象。
+
+2. 更新元数据:
+更新训练器元数据，包括当前训练周期和训练结束时间。
+
+3. 获取LoRA模型:
+获取训练器中的LoRA模型。
+
+4. 结束训练:
+结束训练过程。
+
+5. 保存模型状态:
+如果 save_state 为 True，保存整个模型状态。
+
+6. 保存最终模型:
+生成最终模型的检查点名称。
+保存最终模型的权重。
+
+7. 返回LoRA名称、元数据和LoRA路径:
+返回最终LoRA模型的名称、元数据和LoRA路径。
+    """
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
@@ -1024,6 +1627,31 @@ class FluxTrainEnd:
         return (final_lora_name, metadata, final_lora_path)
 
 class FluxTrainResume:
+    """* 参数详细说明
+load_state_path:
+
+类型: STRING
+
+默认值: ""
+
+说明: 加载状态的路径，用于指定从哪个路径加载训练状态。
+
+skip_until_initial_step:
+
+类型: BOOLEAN
+
+默认值: False
+
+说明: 是否跳过直到初始步数，如果为 True，则在加载状态后跳过直到初始步数的训练。
+
+* 内部逻辑
+配置恢复训练的参数:
+
+创建一个包含恢复训练参数的字典。
+
+返回恢复训练的参数:
+
+返回包含恢复训练参数的字典。"""
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
@@ -1046,6 +1674,26 @@ class FluxTrainResume:
         return (resume_args, )
     
 class FluxTrainBlockSelect:
+    """
+参数详细说明
+include:
+
+类型: STRING
+
+默认值: "lora_unet_single_blocks_20_linear2"
+
+说明: 包含在LoRA网络中的块，用于指定哪些块将被用于LoRA训练。可以输入多个块，用逗号分隔。
+
+* 内部逻辑
+1. 解析输入字符串:
+将输入字符串按逗号分割，处理每个块的名称。
+
+2. 生成包含块的参数:
+创建一个包含块的参数字典。
+
+3. 返回包含块的参数:
+返回包含块的参数字典。
+    """
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
@@ -1100,6 +1748,24 @@ class FluxTrainBlockSelect:
         return (block_args, )
     
 class FluxTrainValidationSettings:
+    """
+    FluxTrainValidationSettings 类提供了一个简单的接口，用于配置验证设置。通过指定采样步数、图像宽度、图像高度、指导缩放、种子、是否偏移调度以及基础偏移和最大偏移，用户可以灵活地进行验证设置。
+#### 输入参数
+- `steps`: 采样步骤数，默认值为20，范围从1到256。
+- `width`: 图像宽度，默认值为512，范围从64到4096，步长为8。
+- `height`: 图像高度，默认值为512，范围从64到4096，步长为8。
+- `guidance_scale`: 指导尺度，默认值为3.5，范围从1.0到32.0，步长为0.05。
+- `seed`: 随机种子，默认值为42。
+- `shift`: 是否调整时间步长以有利于高时间步长的信号图像，默认值为True。
+- `base_shift`: 基础偏移量，默认值为0.5。
+- `max_shift`: 最大偏移量，默认值为1.15。
+
+* 内部逻辑
+创建验证设置字典:
+创建一个包含验证设置的字典。
+
+返回验证设置:
+返回包含验证设置的字典。"""
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
@@ -1126,6 +1792,15 @@ class FluxTrainValidationSettings:
         return (validation_settings,)
         
 class FluxTrainValidate:
+    """- **输入**:
+  - `network_trainer`: 包含网络训练器和训练循环的字典对象。
+  - `validation_settings`: 可选参数，包含验证设置信息，如采样步数、图像尺寸等。
+- **内部逻辑**:
+  - 获取训练器和训练循环对象。
+  - 使用给定的验证设置参数执行模型验证过程。
+  - 使用加速器（accelerator）进行前向传播以生成图像数据。
+  - 将生成的图像数据转换为适于显示的格式并返回。
+- **输出**: 更新后的训练器对象及生成的验证图像。"""
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -1167,6 +1842,20 @@ class FluxTrainValidate:
         return (trainer, (0.5 * (image_tensors + 1.0)).cpu().float(),)
     
 class VisualizeLoss:
+    """
+    - **输入**:
+  - `network_trainer`: 包含网络训练器和训练循环的字典对象。
+  - `plot_style`: Matplotlib绘图风格。
+  - `window_size`: 移动平均窗口大小。
+  - `normalize_y`: 是否将y轴归一化到0。
+  - `width` 和 `height`: 绘图的宽度和高度（以像素为单位）。
+  - `log_scale`: 是否使用对数比例尺绘制y轴。
+
+- **内部逻辑**:
+  - 获取网络训练器中的损失记录列表。
+  - 应用移动平均处理损失值，以便平滑曲线。
+  - 使用Matplotlib库创建并配置绘图，包括设置标题、标签、样式等。
+  - 将生成的图像转换为张量格式，并返回给用户。"""
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
@@ -1227,6 +1916,47 @@ class VisualizeLoss:
         return image_tensor, loss_values,
 
 class FluxKohyaInferenceSampler:
+    """`FluxKohyaInferenceSampler` 类用于从预训练模型和LoRA权重中生成图像。它支持应用或合并LoRA权重，并允许用户指定生成图像的各种参数，如步骤数、宽度、高度、引导尺度等。
+
+#### 输入参数
+- **flux_models**: 包含训练所需的模型路径的字典，包括transformer、vae、clip_l、t5和可选的lora_path。
+- **lora_name**: LoRA的名称（从loras文件夹中选择）。
+- **lora_method**: 是否应用或合并LoRA权重（选项为 "apply" 或 "merge"）。
+- **steps**: 采样步骤数。
+- **width**: 图像宽度。
+- **height**: 图像高度。
+- **guidance_scale**: 引导尺度。
+- **seed**: 随机种子。
+- **use_fp8**: 是否使用fp8权重（布尔值）。
+- **apply_t5_attn_mask**: 是否应用t5注意力掩码（布尔值）。
+- **prompt**: 提示文本。
+
+#### 返回值
+- 图像数据：生成的图像张量。
+
+#### 内部逻辑
+
+1. 初始化设备和数据类型：
+   - 根据是否使用fp8来设置加速器和数据类型。
+
+2. 加载预训练模型组件：
+   - 加载CLIP-L模型和T5XXL模型，并进行评估模式设置。
+
+3. 处理提示文本并编码：
+   - 使用给定的提示文本进行标记化和编码处理，得到CLIP-L和T5XXL的输出。
+
+4. 准备噪声张量：
+   - 根据指定的高度和宽度准备噪声张量，并设置随机种子。
+
+5. 定义调度函数：
+   - 定义用于时间步长变换的时间偏移函数`time_shift`以及线性估计函数`get_lin_function`，并基于这些函数构建调度时间步长列表`get_schedule`。
+
+6. 执行去噪操作：
+   - 使用定义好的调度时间步长列表执行去噪操作，逐步更新噪声张量以生成最终图像。
+
+7. 解码生成的图像：
+   - 将经过去噪操作后的噪声张量解码为实际图像，并将其限制在[-1, 1]范围内以确保正确显示效果。
+"""
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
@@ -1503,6 +2233,15 @@ class FluxKohyaInferenceSampler:
         return ((0.5 * (x + 1.0)).cpu().float(),)   
 
 class UploadToHuggingFace:
+    """
+- **功能**: 将训练好的模型上传到Hugging Face模型库。
+- **输入**:
+  - `network_trainer`: 包含网络训练器和训练循环的字典对象。
+  - `source_path`: 模型文件或文件夹的路径。
+  - `repo_id`: Hugging Face仓库的ID。
+  - `revision`: 仓库版本。
+  - `private`: 是否创建私有仓库（布尔值）。
+  - `token` (可选): Hugging Face API令牌，用于身份验证。"""
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -1524,6 +2263,13 @@ class UploadToHuggingFace:
     CATEGORY = "FluxTrainer"
 
     def upload(self, source_path, network_trainer, repo_id, private, revision, token=""):
+        """- **输入**:
+  - network_trainer, source_path, repo_id, private, revision, token
+- **内部逻辑**:
+  1. 初始化Hugging Face API并读取令牌（如果未提供，则从本地文件中读取）。
+  2. 检查指定的仓库是否已存在。如果不存在，则创建一个新的仓库（根据`private`参数设置为私有或公开）。
+  3. 将模型文件或整个目录上传到指定的Hugging Face仓库中。同时上传包含元数据信息的JSON文件。
+- **输出**: 更新后的网络训练器对象和上传状态字符串。"""
         with torch.inference_mode(False):
             from huggingface_hub import HfApi
             
@@ -1600,6 +2346,24 @@ class UploadToHuggingFace:
             return (network_trainer, status,)
         
 class ExtractFluxLoRA:
+    """#### 功能
+该类的主要功能是从两个模型中提取LoRA权重，并将其保存到指定路径。具体来说，它从一个原始模型和一个微调后的模型中提取LoRA权重，并将其保存为指定格式的文件。
+
+#### 输入参数
+- `original_model`: 原始模型文件路径。
+- `finetuned_model`: 微调后的模型文件路径。
+- `output_path`: 输出路径，用于存储提取的LoRA权重文件。
+- `dim`: LoRA维度（rank）。
+- `save_dtype`: 保存LoRA权重的数据类型，可以是`fp32`, `fp16`, `bf16`, `fp8_e4m3fn`, 或`fp8_e5m2`。
+- `load_device`: 加载模型时使用的设备（`cpu` 或`cuda`）。
+- `store_device`: 存储LoRA权重时使用的设备（`cpu` 或`cuda`）。
+- `clamp_quantile`: 量化百分位数，用于限制权重范围。
+- `metadata`: 是否构建元数据信息。
+- `mem_eff_safe_open`: 是否使用内存高效的加载方式。
+
+#### 输出
+返回包含输出路径的字符串。
+"""
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -1623,6 +2387,17 @@ class ExtractFluxLoRA:
     CATEGORY = "FluxTrainer"
 
     def extract(self, original_model, finetuned_model, output_path, dim, save_dtype, load_device, store_device, clamp_quantile, metadata, mem_eff_safe_open):
+        """#### 详细说明
+
+1. **输入参数处理**：
+   - 获取原始模型和微调后模型的完整路径。
+   - 设置输出文件名，基于微调后模型名称，并加上提取的LoRA权重信息。
+
+2. **核心逻辑**：
+   - 使用从自定义模块导入的`sparse_utils.svd()`函数来执行SVD分解以提取LoRA权重。该函数需要多个参数，包括原始和微调后的模型路径、输出文件路径、维度、设备类型、存储设备类型等。
+
+3. **返回结果**：
+   - 返回一个包含输出路径的元组。"""
         from .flux_extract_lora import svd
         transformer_path = folder_paths.get_full_path("unet", original_model)
         finetuned_model_path = folder_paths.get_full_path("unet", finetuned_model)

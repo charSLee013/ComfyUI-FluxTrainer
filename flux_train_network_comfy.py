@@ -13,12 +13,41 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+"""该代码文件的主要功能是通过训练带有描述的图像数据来优化模型。代码实现了在训练过程中将模型块在CPU和GPU之间交换，以减少内存使用。此外，代码还使用了融合优化器和梯度钩子来提高梯度处理的效率。该实现基于2kpr的工作，并进行了适应和扩展以满足当前项目的需求。
+"""
+
 class FluxNetworkTrainer(NetworkTrainer):
+    """封装了训练过程的初始化和训练循环。
+    ### 主要功能
+    - 继承自 `NetworkTrainer` 类。
+        初始化训练参数和数据集。
+
+        设置缓存策略和数据加载器。
+
+        准备加速器和混合精度。
+
+        加载模型和优化器。
+
+        进行训练循环，计算损失并更新模型参数。
+
+        保存训练状态和模型。
+"""
     def __init__(self):
+        """- 初始化 `FluxNetworkTrainer` 类实例。
+- 设置属性 `sample_prompts_te_outputs` 为 None。"""
         super().__init__()
         self.sample_prompts_te_outputs = None
 
     def assert_extra_args(self, args, train_dataset_group):
+        """args (argparse.Namespace): 命令行参数。
+        train_dataset_group (DatasetGroup): 训练数据集组。
+        * 内部运行逻辑
+        - 验证 cache_text_encoder_outputs_to_disk 和 cache_text_encoder_outputs 参数。
+        - 验证 cache_text_encoder_outputs 参数。
+        - 准备 CLIP-L/T5XXL 训练标志。
+        - 验证 max_token_length 参数。
+        - 验证 split_mode 和 cpu_offload_checkpointing 参数。
+        """
         super().assert_extra_args(args, train_dataset_group)
         # sdxl_train_util.verify_sdxl_training_args(args)
 
@@ -50,12 +79,31 @@ class FluxNetworkTrainer(NetworkTrainer):
         train_dataset_group.verify_bucket_reso_steps(32)  # TODO check this
 
     def get_flux_model_name(self, args):
+        """功能
+            获取 FLUX 模型的名称。
+            * 输入
+            args (argparse.Namespace): 命令行参数。
+            * 内部运行逻辑
+            根据 pretrained_model_name_or_path 参数中的关键词判断模型名称。
+            * 输出
+            返回模型名称（"schnell" 或 "dev"）。"""
         if any(keyword in args.pretrained_model_name_or_path.lower() for keyword in ["schnell", "open", "libre"]):
             return "schnell"
         else:
             return "dev"
 
     def load_target_model(self, args, weight_dtype, accelerator):
+        """- 加载目标 Flux 模型及其相关组件（CLIP-L 和 T5XXL）。
+- 处理 FP8 数据类型并根据条件将模型移动到 CPU 或 GPU 上。
+* 输入
+- args (argparse.Namespace): 命令行参数。
+- weight_dtype (torch.dtype): 权重数据类型。
+- accelerator (Accelerator): 加速器对象。
+* 内部运行逻辑
+加载 FLUX 模型、CLIP-L 模型、T5XXL 模型和 VAE 模型。
+如果启用了 split_mode，则准备分割模型。
+* 输出
+返回模型版本、文本编码器、VAE 和 FLUX 模型。"""
         # currently offload to cpu for some models
         name = self.get_flux_model_name(args)
 
@@ -143,6 +191,10 @@ class FluxNetworkTrainer(NetworkTrainer):
         return flux_lower
 
     def get_tokenize_strategy(self, args):
+        """获取分词策略。
+        * 输入
+        - args (argparse.Namespace): 命令行参数。
+根据 t5xxl_max_token_length 参数设置分词策略。"""
         name = self.get_flux_model_name(args)
 
         if args.t5xxl_max_token_length is None:
@@ -157,16 +209,26 @@ class FluxNetworkTrainer(NetworkTrainer):
         return strategy_flux.FluxTokenizeStrategy(t5xxl_max_token_length, args.tokenizer_cache_dir)
 
     def get_tokenizers(self, tokenize_strategy: strategy_flux.FluxTokenizeStrategy):
+        """返回文本编码器的分词器列表。"""
         return [tokenize_strategy.clip_l, tokenize_strategy.t5xxl]
 
     def get_latents_caching_strategy(self, args):
+        """返回一个用于潜变量缓存的策略对象。"""
         latents_caching_strategy = strategy_flux.FluxLatentsCachingStrategy(args.cache_latents_to_disk, args.vae_batch_size, False)
         return latents_caching_strategy
 
     def get_text_encoding_strategy(self, args):
+        """返回一个用于文本编码的策略对象。"""
         return strategy_flux.FluxTextEncodingStrategy(apply_t5_attn_mask=args.apply_t5_attn_mask)
 
     def post_process_network(self, args, accelerator, network, text_encoders, unet):
+        """后处理网络，检查 T5XXL 是否被训练以及缓存文本编码器输出的相关条件。
+        * 输入
+            - args (argparse.Namespace): 命令行参数。
+            - accelerator (Accelerator): 加速器对象。
+            - network (Network): 网络对象。
+            - text_encoders (List[torch.nn.Module]): 文本编码器列表。
+            - unet (Flux): FLUX 模型。"""
         # check t5xxl is trained or not
         self.train_t5xxl = network.train_t5xxl
 
@@ -176,6 +238,15 @@ class FluxNetworkTrainer(NetworkTrainer):
             )
 
     def get_models_for_text_encoding(self, args, accelerator, text_encoders):
+        """获取用于文本编码的模型。
+       - 输入
+            * args (argparse.Namespace): 命令行参数。
+            * accelerator (Accelerator): 加速器对象。
+            * text_encoders (List[torch.nn.Module]): 文本编码器列表。
+        - 内部运行逻辑
+            根据 cache_text_encoder_outputs 参数和训练标志返回相应的文本编码器。
+            输出
+            返回文本编码器列表。"""
         if args.cache_text_encoder_outputs:
             if self.train_clip_l and not self.train_t5xxl:
                 return text_encoders[0:1]  # only CLIP-L is needed for encoding because T5XXL is cached
@@ -185,9 +256,26 @@ class FluxNetworkTrainer(NetworkTrainer):
             return text_encoders  # both CLIP-L and T5XXL are needed for encoding
 
     def get_text_encoders_train_flags(self, args, text_encoders):
+        """获取文本编码器的训练标志。
+        * 输入
+            - args (argparse.Namespace): 命令行参数。
+            - text_encoders (List[torch.nn.Module]): 文本编码器列表。
+
+        * 内部运行逻辑
+            返回 CLIP-L 和 T5XXL 的训练标志。
+        输出
+            返回训练标志列表。"""
         return [self.train_clip_l, self.train_t5xxl]
 
     def get_text_encoder_outputs_caching_strategy(self, args):
+        """* 功能
+        - 获取文本编码器输出的缓存策略。
+        * 输入
+            - args (argparse.Namespace): 命令行参数。
+        * 内部运行逻辑
+            - 根据 cache_text_encoder_outputs 参数和训练标志设置文本编码器输出的缓存策略。
+        * 输出
+            - 返回文本编码器输出的缓存策略对象。"""
         if args.cache_text_encoder_outputs:
             # if the text encoders is trained, we need tokenization, so is_partial is True
             return strategy_flux.FluxTextEncoderOutputsCachingStrategy(
@@ -203,6 +291,21 @@ class FluxNetworkTrainer(NetworkTrainer):
     def cache_text_encoder_outputs_if_needed(
         self, args, accelerator: Accelerator, unet, vae, text_encoders, dataset: train_util.DatasetGroup, weight_dtype
     ):
+        """* 功能
+        - 如果需要，缓存文本编码器的输出。
+        * 输入
+            - args (argparse.Namespace): 命令行参数。
+            - accelerator (Accelerator): 加速器对象。
+            - unet (Flux): FLUX 模型。
+            - vae (VAE): VAE 模型。
+            - text_encoders (List[torch.nn.Module]): 文本编码器列表。
+            - dataset (DatasetGroup): 数据集组。
+            - weight_dtype (torch.dtype): 权重数据类型。
+        * 内部运行逻辑
+        如果启用了 cache_text_encoder_outputs，则缓存文本编码器的输出。
+        如果需要，缓存样本提示的嵌入。
+        输出
+        无。"""
         if args.cache_text_encoder_outputs:
             if not args.lowram:
                 # reduce memory consumption
@@ -287,6 +390,24 @@ class FluxNetworkTrainer(NetworkTrainer):
             text_encoders[1].to(accelerator.device)
 
     def sample_images(self, accelerator, args, epoch, global_step, flux, ae, text_encoder, sample_prompts_te_outputs, validation_settings):
+        """* 功能
+        生成样本图像。
+        * 输入
+        - accelerator (Accelerator): 加速器对象。
+        - args (argparse.Namespace): 命令行参数。
+        - epoch (int): 当前周期。
+        - global_step (int): 当前全局步数。
+        - flux (Flux): FLUX 模型。
+        - ae (VAE): VAE 模型。
+        - text_encoder (List[torch.nn.Module]): 文本编码器列表。
+        - sample_prompts_te_outputs (Dict): 样本提示的文本编码器输出。
+        - validation_settings (Dict): 验证设置。
+        * 内部运行逻辑
+        如果启用了 split_mode，则使用分割模型生成图像。
+        否则，直接使用 FLUX 模型生成图像。
+
+        * 输出
+        返回生成的图像张量。"""
         text_encoders = text_encoder  # for compatibility
         text_encoders = self.get_models_for_text_encoding(args, accelerator, text_encoders)
         if not args.split_mode:
@@ -296,13 +417,41 @@ class FluxNetworkTrainer(NetworkTrainer):
             return image_tensors
         
         class FluxUpperLowerWrapper(torch.nn.Module):
+            """FluxUpperLowerWrapper 类是一个内部类，用于在分割模式（split mode）下包裹 FluxUpper 和 FluxLower 模型。这个类的主要目的是在前向传播过程中，动态地将模型的上层和下层模型在 CPU 和 GPU 之间进行切换，以减少内存占用。
+            
+            """
             def __init__(self, flux_upper: flux_models.FluxUpper, flux_lower: flux_models.FluxLower, device: torch.device):
+                """- 初始化 `FluxUpperLowerWrapper` 类实例。
+                    - 参数：
+                    - `flux_upper`: Flux 上层模型。
+                    - `flux_lower`: Flux 下层模型。
+                    - `device`: 目标设备（通常为 GPU）。"""
                 super().__init__()
                 self.flux_upper = flux_upper
                 self.flux_lower = flux_lower
                 self.target_device = device
 
             def forward(self, img, img_ids, txt, txt_ids, timesteps, y, guidance=None, txt_attention_mask=None):
+                """ 定义前向传播方法。
+                - 参数：
+                - `img`: 输入图像特征。
+                - `img_ids`: 图像 ID。
+                - `txt`: 文本特征。
+                - `txt_ids`: 文本 ID。
+                - `timesteps`: 时间步长。
+                - `y`: 其他输入参数。
+                - `guidance`: 引导参数（可选）。
+                - `txt_attention_mask`: 文本注意力掩码（可选）。
+
+                ### 内部逻辑
+                1. **切换设备**：
+                ```python
+                self.flux_lower.to("cpu")
+                clean_memory_on_device(self.target_device)
+                self.flux_upper.to(self.target_device)
+                ```
+                在前向传播开始时，将下层模型移动到 CPU 并清理目标设备上的内存，然后将上层模型移动到目标设备。
+"""
                 self.flux_lower.to("cpu")
                 clean_memory_on_device(self.target_device)
                 self.flux_upper.to(self.target_device)
@@ -321,14 +470,47 @@ class FluxNetworkTrainer(NetworkTrainer):
         return image_tensors
 
     def get_noise_scheduler(self, args: argparse.Namespace, device: torch.device) -> Any:
+        """* 功能
+        - 获取噪声调度器。
+        * 输入
+        - args (argparse.Namespace): 命令行参数。
+        - device (torch.device): 设备对象。
+        * 内部运行逻辑
+        - 创建并返回噪声调度器。
+        * 输出
+        - 返回噪声调度器对象。"""
         noise_scheduler = sd3_train_utils.FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=args.discrete_flow_shift)
         self.noise_scheduler_copy = copy.deepcopy(noise_scheduler)
         return noise_scheduler
 
     def encode_images_to_latents(self, args, accelerator, vae, images):
+        """功能
+        - 将图像编码为潜在变量。
+        * 输入
+            - args (argparse.Namespace): 命令行参数。
+            - accelerator (Accelerator): 加速器对象。
+            - vae (VAE): VAE 模型。
+            - images (torch.Tensor): 输入图像张量。
+        * 内部运行逻辑
+            - 使用 VAE 模型将图像编码为潜在变量。
+        * 输出
+            - 返回潜在变量张量。"""
         return vae.encode(images)
 
     def shift_scale_latents(self, args, latents):
+        """功能
+缩放和偏移潜在变量。
+
+输入
+args (argparse.Namespace): 命令行参数。
+
+latents (torch.Tensor): 潜在变量张量。
+
+内部运行逻辑
+直接返回输入的潜在变量张量。
+
+输出
+返回潜在变量张量。"""
         return latents
 
     def get_noise_pred_and_target(
@@ -344,6 +526,31 @@ class FluxNetworkTrainer(NetworkTrainer):
         weight_dtype,
         train_unet,
     ):
+        """* 功能
+            获取噪声预测和目标。
+            * 输入
+                args (argparse.Namespace): 命令行参数。
+                accelerator (Accelerator): 加速器对象。
+                noise_scheduler (NoiseScheduler): 噪声调度器对象。
+                latents (torch.Tensor): 潜在变量张量。
+                batch (Dict): 批次数据。
+                text_encoder_conds (List[torch.Tensor]): 文本编码器条件张量。
+                unet (Flux): FLUX 模型。
+                network (Network): 网络对象。
+                weight_dtype (torch.dtype): 权重数据类型。
+                train_unet (bool): 是否训练 UNet。
+
+            * 内部运行逻辑
+                生成噪声并添加到潜在变量中。
+                获取噪声模型输入和时间步。
+                打包潜在变量并获取图像 ID。
+                获取指导向量。
+                预测噪声残差。
+                解包潜在变量。
+                应用模型预测类型。
+                获取目标噪声。
+            - 输出
+            * 返回噪声预测、目标噪声、时间步、权重和加权方案。"""
         # Sample noise that we'll add to the latents
         noise = torch.randn_like(latents)
         bsz = latents.shape[0]
@@ -436,12 +643,30 @@ class FluxNetworkTrainer(NetworkTrainer):
         return model_pred, target, timesteps, None, weighting
 
     def post_process_loss(self, loss, args, timesteps, noise_scheduler):
+        """后处理loss值"""
         return loss
 
     def get_sai_model_spec(self, args):
+        """功能
+获取 SAI 模型规范。
+
+输入
+args (argparse.Namespace): 命令行参数。
+
+内部运行逻辑
+返回 SAI 模型规范。"""
         return train_util.get_sai_model_spec(None, args, False, True, False, flux="dev")
 
     def update_metadata(self, metadata, args):
+        """* 功能
+            更新元数据。
+        * 输入
+            metadata (Dict): 元数据字典。
+            args (argparse.Namespace): 命令行参数。
+        * 内部运行逻辑
+            更新元数据字典中的相关参数。
+        * 输出
+        无。"""
         metadata["ss_apply_t5_attn_mask"] = args.apply_t5_attn_mask
         metadata["ss_weighting_scheme"] = args.weighting_scheme
         metadata["ss_logit_mean"] = args.logit_mean
@@ -454,21 +679,53 @@ class FluxNetworkTrainer(NetworkTrainer):
         metadata["ss_discrete_flow_shift"] = args.discrete_flow_shift
 
     def is_text_encoder_not_needed_for_training(self, args):
+        """* 功能
+            判断是否不需要文本编码器进行训练。
+        * 输入
+            args (argparse.Namespace): 命令行参数。
+        * 内部运行逻辑
+            根据 cache_text_encoder_outputs 参数和训练标志判断是否不需要文本编码器进行训练。
+        * 输出
+            返回布尔值。"""
         return args.cache_text_encoder_outputs and not self.is_train_text_encoder(args)
 
     def prepare_text_encoder_grad_ckpt_workaround(self, index, text_encoder):
+        """* 功能
+            - 准备文本编码器的梯度检查点工作区。
+
+        * 输入
+            - index (int): 文本编码器索引。
+            - text_encoder (torch.nn.Module): 文本编码器对象。
+
+        * 内部运行逻辑
+            根据文本编码器索引准备相应的梯度检查点工作区。
+
+        * 输出
+            无。"""
         if index == 0:  # CLIP-L
             return super().prepare_text_encoder_grad_ckpt_workaround(index, text_encoder)
         else:  # T5XXL
             text_encoder.encoder.embed_tokens.requires_grad_(True)
 
     def prepare_text_encoder_fp8(self, index, text_encoder, te_weight_dtype, weight_dtype):
+        """* 功能
+            准备文本编码器的 FP8 训练。
+            * 输入
+                index (int): 文本编码器索引。
+                text_encoder (torch.nn.Module): 文本编码器对象。
+                te_weight_dtype (torch.dtype): 文本编码器权重数据类型。
+                weight_dtype (torch.dtype): 权重数据类型。
+            * 内部运行逻辑
+                根据文本编码器索引准备相应的 FP8 训练。
+            * 输出
+            无。
+
+        """
         if index == 0:  # CLIP-L
             logger.info(f"prepare CLIP-L for fp8: set to {te_weight_dtype}, set embeddings to {weight_dtype}")
             text_encoder.to(te_weight_dtype)  # fp8
             text_encoder.text_model.embeddings.to(dtype=weight_dtype)
         else:  # T5XXL
-
             def prepare_fp8(text_encoder, target_dtype):
                 def forward_hook(module):
                     def forward(hidden_states):
@@ -499,6 +756,14 @@ class FluxNetworkTrainer(NetworkTrainer):
 
 
 def setup_parser() -> argparse.ArgumentParser:
+    """* 功能
+        设置命令行参数解析器。
+    * 输入
+        无。
+    * 内部运行逻辑
+        创建一个 argparse.ArgumentParser 对象。
+    * 输出
+        返回配置好的 argparse.ArgumentParser 对象。"""
     parser = setup_parser()
     flux_train_utils.add_flux_train_arguments(parser)
 

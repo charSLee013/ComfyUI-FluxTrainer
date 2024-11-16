@@ -10,6 +10,9 @@
 # - Use of fused optimizer and grad_hook for efficient gradient processing
 # - Per-block fused optimizer instances
 
+"""该代码文件定义了一个名为 FluxTrainer 的类，用于训练深度学习模型（具体是 FLUX 模型）。该类实现了模型训练的多个步骤，包括数据集准备、优化器配置、梯度计算和更新等。此外，该文件还包含一个命令行参数解析器的设置函数 setup_parser。
+"""
+
 import argparse
 import copy
 import math
@@ -48,9 +51,25 @@ from .library.custom_train_functions import apply_masked_loss, add_custom_train_
 
 
 class FluxTrainer:
+    """主要功能和作用
+- 初始化训练环境并准备数据集。
+- 管理优化器和学习率调度器。
+- 实现训练循环，并处理梯度计算、模型更新和日志记录。
+"""
     def __init__(self):
+        """初始化 `FluxTrainer` 类的实例。初始化时会设置 `sample_prompts_te_outputs` 属性为 `None`。"""
         self.sample_prompts_te_outputs = None
     def init_train(self, args):
+        """- 输入：一个包含训练参数的命名元组 `args`。
+- 内部运行逻辑：
+  - 验证并准备训练参数。
+  - 设置日志记录。
+  - 准备缓存策略。
+  - 加载并处理数据集。
+  - 配置加速器（如 DeepSpeed）和其他必要的组件（如优化器、学习率调度器）。
+  - 实现梯度检查点和内存管理策略（如 CPU offloading）。
+  - 准备数据加载器和其他必要的组件以进行实际的模型训练。
+- 输出：返回一个 `training_loop` 函数，用于执行实际的训练循环。"""
         train_util.verify_training_args(args)
         train_util.prepare_dataset_args(args, True)
         # sdxl_train_util.verify_sdxl_training_args(args)
@@ -492,6 +511,13 @@ class FluxTrainer:
                                     # create swap hook
                                     def create_double_swap_grad_hook(bidx, bidx_cuda):
                                         def __grad_hook(tensor: torch.Tensor):
+                                            """
+                                            #### 输入
+                                                - 参数 `tensor`: 要处理的参数张量。
+
+                                                #### 内部运行逻辑
+                                                - 梯度裁剪（如果需要的话）。
+                                                - 调用相应的优化器进行参数更新，并将梯度置零。"""
                                             if accelerator.sync_gradients and args.max_grad_norm != 0.0:
                                                 accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
                                             optimizer.step_param(tensor, param_group)
@@ -520,6 +546,13 @@ class FluxTrainer:
 
                                     # create swap hook
                                     def create_single_swap_grad_hook(bidx, bidx_cuda):
+                                        """创建一个单块交换的梯度钩子函数。#### 输入
+                                            - 参数 `bidx`: 块索引，在单块交换时使用该索引来确定要交换的块位置。
+
+                                            #### 内部运行逻辑
+                                            - 定义一个内部函数 `_single_swap_grad_hook` 来处理单个块交换：
+                                            - 梯度裁剪（如果需要的话）。
+                                            - 更新计数器以确定何时调用优化器的 `step` 方法并交换 CPU 和 GPU 上的块以减少内存使用量。"""
                                         def __grad_hook(tensor: torch.Tensor):
                                             if accelerator.sync_gradients and args.max_grad_norm != 0.0:
                                                 accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
@@ -574,7 +607,26 @@ class FluxTrainer:
                             block_type, block_idx = block_types_and_indices[opt_idx]
 
                             def create_optimizer_hook(btype, bidx):
+                                """创建一个优化器钩子函数，用于在梯度计算后执行优化步骤。
+                                #### 输入
+                                    - `btype`: 块类型，可以是 "double" 或 "single"。
+                                    - `bidx`: 块索引。
+
+                                    #### 内部运行逻辑
+                                    - 定义一个内部函数 `_optimizer_hook` 来处理梯度累积后的操作：
+                                    - 梯度裁剪（如果需要的话）。
+                                    - 更新计数器以确定何时调用优化器的 `step` 方法。
+                                    - 如果所有参数都已累积，则调用相应的优化器进行参数更新，并将梯度置零。
+                                    - 如果有需要，则交换 CPU 和 GPU 上的块以减少内存使用量。
+                                """
                                 def optimizer_hook(parameter: torch.Tensor):
+                                    """在梯度计算后执行优化步骤，并在需要时交换块。
+                                    #### 输入
+                                        - 参数 `parameter`: 要处理的参数张量。
+
+                                        #### 内部运行逻辑
+                                        - 梯度裁剪（如果需要的话）。
+                                        - 调用相应的优化器进行参数更新，并将梯度置零。"""
                                     # print(f"optimizer_hook: {btype}, {bidx}")
                                     if accelerator.sync_gradients and args.max_grad_norm != 0.0:
                                         accelerator.clip_grad_norm_(parameter, args.max_grad_norm)
@@ -665,6 +717,23 @@ class FluxTrainer:
         self.save_dtype = save_dtype
             
         def training_loop(break_at_steps, epoch):
+            """- `break_at_steps`: 一个整数，表示在达到指定步数时停止训练循环。
+- `epoch`: 当前的训练轮数。
+
+#### 内部运行逻辑
+- 初始化全局变量 `optimizer_hooked_count`（如果使用了分块融合优化器）。
+- 遍历数据加载器中的每个批次：
+  - 更新当前步骤值。
+  - 重置优化器计数器（如果使用了分块融合优化器）。
+  - 使用 `accelerator.accumulate` 上下文管理器累积梯度：
+    - 对于每个批次的数据，进行数据预处理（例如，将图像编码为潜变量）。
+    - 计算噪声输入和时间步长。
+    - 进行模型预测（即通过模型计算预测值）。
+    - 计算损失，并应用掩码损失（如果需要的话）。
+    - 反向传播损失并更新模型参数（包括梯度裁剪、优化步骤和学习率调度等）。
+
+#### 输出
+- 返回已经完成的步数。"""
             global optimizer_hooked_count
             steps_done = 0
             #accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")

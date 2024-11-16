@@ -1,6 +1,23 @@
 # training with captions
 # XXX dropped option: hypernetwork training
 
+"""
+该Python脚本主要用于训练一个基于Stable Diffusion的深度学习模型。文件中定义了一个主要的train函数，该函数负责整个训练过程，包括数据集准备、模型加载、优化器设置、训练循环等。此外，还包含了一些辅助函数和类来处理各种任务，如日志记录、数据预处理、模型保存等。
+
+使用例子（假设）：
+# 准备加速器（accelerator）
+logger.info("prepare accelerator")
+accelerator = train_util.prepare_accelerator(args)
+
+# mixed precision 对应的类型准备，并适当地进行类型转换
+weight_dtype, save_dtype = train_util.prepare_dtype(args)
+vae_dtype = torch.float32 if args.no_half_vae else weight_dtype
+
+# 加载目标模型（文本编码器 text_encoder 和 UNet）
+text_encoder, vae, unet, load_stable_diffusion_format = train_util.load_target_model(args, weight_dtype, accelerator)
+
+"""
+
 import argparse
 import math
 import os
@@ -43,6 +60,21 @@ import library.strategy_sd as strategy_sd
 
 
 def train(args):
+    """
+- **功能**：执行整个训练流程。
+- **输入**：
+  - `args`：包含所有配置参数的对象。
+- **内部运行逻辑**：
+  - 验证并准备训练参数。
+  - 设置日志记录。
+  - 准备数据集和缓存策略。
+  - 初始化加速器（accelerator）和其他必要组件。
+  - 加载并准备模型（文本编码器和UNet）。
+  - 设置优化器和学习率调度器。
+  - 训练循环，在每个步骤中进行前向传播、损失计算、反向传播和参数更新。
+- **输出**：
+  - 没有直接返回值，但会在指定条件下保存模型状态和检查点。
+    """
     train_util.verify_training_args(args)
     train_util.prepare_dataset_args(args, True)
     deepspeed_utils.prepare_deepspeed_args(args)
@@ -519,6 +551,16 @@ def train(args):
 
 
 def setup_parser() -> argparse.ArgumentParser:
+    """函数：`setup_parser()`
+
+- **功能**：设置并返回命令行参数解析器对象。
+- **输入**：
+  - 没有直接输入参数。
+- **内部运行逻辑**：
+  - 创建一个`argparse.ArgumentParser()`对象，并添加多个组别的参数，包括日志记录、模型路径、数据集配置、训练配置等。
+- **输出**：
+  - 返回配置好的解析器对象。
+    """
     parser = argparse.ArgumentParser()
 
     add_logging_arguments(parser)
