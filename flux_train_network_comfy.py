@@ -500,15 +500,11 @@ class FluxNetworkTrainer(NetworkTrainer):
     def shift_scale_latents(self, args, latents):
         """功能
 缩放和偏移潜在变量。
-
 输入
 args (argparse.Namespace): 命令行参数。
-
 latents (torch.Tensor): 潜在变量张量。
-
 内部运行逻辑
 直接返回输入的潜在变量张量。
-
 输出
 返回潜在变量张量。"""
         return latents
