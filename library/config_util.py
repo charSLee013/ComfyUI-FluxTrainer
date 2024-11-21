@@ -10,13 +10,7 @@ import json
 from pathlib import Path
 
 # from toolz import curry
-from typing import (
-    List,
-    Optional,
-    Sequence,
-    Tuple,
-    Union,
-)
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import toml
 import voluptuous
@@ -78,6 +72,7 @@ class BaseSubsetParams:
     caption_tag_dropout_rate: float = 0.0
     token_warmup_min: int = 1
     token_warmup_step: float = 0
+    custom_attributes: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -197,6 +192,7 @@ class ConfigSanitizer:
         "token_warmup_step": Any(float, int),
         "caption_prefix": str,
         "caption_suffix": str,
+        "custom_attributes": dict,
     }
     # DO means DropOut
     DO_SUBSET_ASCENDABLE_SCHEMA = {
@@ -530,7 +526,7 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
           secondary_separator: {subset.secondary_separator}
           enable_wildcard: {subset.enable_wildcard}
           caption_dropout_rate: {subset.caption_dropout_rate}
-          caption_dropout_every_n_epoches: {subset.caption_dropout_every_n_epochs}
+          caption_dropout_every_n_epochs: {subset.caption_dropout_every_n_epochs}
           caption_tag_dropout_rate: {subset.caption_tag_dropout_rate}
           caption_prefix: {subset.caption_prefix}
           caption_suffix: {subset.caption_suffix}
@@ -538,9 +534,10 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
           flip_aug: {subset.flip_aug}
           face_crop_aug_range: {subset.face_crop_aug_range}
           random_crop: {subset.random_crop}
-          token_warmup_min: {subset.token_warmup_min},
-          token_warmup_step: {subset.token_warmup_step},
-          alpha_mask: {subset.alpha_mask},
+          token_warmup_min: {subset.token_warmup_min}
+          token_warmup_step: {subset.token_warmup_step}
+          alpha_mask: {subset.alpha_mask}
+          custom_attributes: {subset.custom_attributes}
       """
                 ),
                 "  ",
@@ -649,12 +646,11 @@ def generate_controlnet_subsets_config_by_subdirs(
 
 
 def load_user_config(file: str) -> dict:
-    file_path: Path = Path(file)
-    if not file_path.is_file():
-        #raise ValueError(f"file not found / ファイルが見つかりません: {file}")
-        return toml.loads(file)
+    file: Path = Path(file)
+    if not file.is_file():
+        raise ValueError(f"file not found / ファイルが見つかりません: {file}")
 
-    if file_path.name.lower().endswith(".json"):
+    if file.name.lower().endswith(".json"):
         try:
             with open(file, "r") as f:
                 config = json.load(f)
@@ -663,16 +659,16 @@ def load_user_config(file: str) -> dict:
                 f"Error on parsing JSON config file. Please check the format. / JSON 形式の設定ファイルの読み込みに失敗しました。文法が正しいか確認してください。: {file}"
             )
             raise
-    elif file_path.name.lower().endswith(".toml"):
+    elif file.name.lower().endswith(".toml"):
         try:
-            config = toml.load(file_path)
+            config = toml.load(file)
         except Exception:
             logger.error(
                 f"Error on parsing TOML config file. Please check the format. / TOML 形式の設定ファイルの読み込みに失敗しました。文法が正しいか確認してください。: {file}"
             )
             raise
     else:
-        raise ValueError(f"not supported config file format / 対応していない設定ファイルの形式です: {file_path}")
+        raise ValueError(f"not supported config file format / 対応していない設定ファイルの形式です: {file}")
 
     return config
 

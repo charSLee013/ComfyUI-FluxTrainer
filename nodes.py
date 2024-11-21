@@ -716,8 +716,15 @@ extra_pnginfo: 额外的PNG信息，用于传递额外的PNG信息。
 训练周期数: 训练的总周期数。
 
 训练参数: 包含所有训练参数的对象。"""
+
+        """1. 清理缓存，释放内存。
+        缓存清理: 使用 mm.soft_empty_cache() 清理缓存，确保有足够的内存用于训练。
+        创建输出目录: 检查并创建输出目录，确保路径存在。
+        磁盘空间检查: 检查输出目录的可用空间是否足够，如果不足则抛出异常。
+                """
         mm.soft_empty_cache()
         
+
         output_dir = os.path.abspath(kwargs.get("output_dir"))
         os.makedirs(output_dir, exist_ok=True)
     
@@ -726,10 +733,13 @@ extra_pnginfo: 额外的PNG信息，用于传递额外的PNG信息。
         required_free_space = 2 * (2**30)
         if free <= required_free_space:
             raise ValueError(f"Insufficient disk space. Required: {required_free_space/2**30}GB. Available: {free/2**30}GB")
-        
+        """2. 数据集配置转换
+        数据集配置转换: 将数据集配置从 JSON 格式转换为 TOML 格式，以便后续使用。"""
         dataset_config = dataset["datasets"]
         dataset_toml = toml.dumps(json.loads(dataset_config))
 
+        """3. 解析命令行参数
+        解析命令行参数: 使用 train_network_setup_parser() 创建解析器，并解析额外的训练命令参数。"""
         parser = train_network_setup_parser()
         if additional_args is not None:
             print(f"additional_args: {additional_args}")
@@ -737,12 +747,16 @@ extra_pnginfo: 额外的PNG信息，用于传递额外的PNG信息。
         else:
             args, _ = parser.parse_known_args()
 
+        """4. 配置缓存选项
+        根据 cache_latents 和 cache_text_encoder_outputs 的值设置相应的缓存选项。
+        如果缓存到磁盘，则禁用某些数据增强选项。"""
         if kwargs.get("cache_latents") == "memory":
             kwargs["cache_latents"] = True
             kwargs["cache_latents_to_disk"] = False
         elif kwargs.get("cache_latents") == "disk":
             kwargs["cache_latents"] = True
             kwargs["cache_latents_to_disk"] = True
+            # 为什么将隐空间存储在磁盘里面会将标签丢弃率设置为0
             kwargs["caption_dropout_rate"] = 0.0
             kwargs["shuffle_caption"] = False
             kwargs["token_warmup_step"] = 0.0
@@ -761,11 +775,28 @@ extra_pnginfo: 额外的PNG信息，用于传递额外的PNG信息。
             kwargs["cache_text_encoder_outputs"] = False
             kwargs["cache_text_encoder_outputs_to_disk"] = False
 
+        """5. 处理验证样本提示
+        如果 sample_prompts 中包含 |，则将其分割为多个提示。
+        否则，将其作为一个提示列表。
+"""
         if '|' in sample_prompts:
             prompts = sample_prompts.split('|')
         else:
             prompts = [sample_prompts]
 
+        """6. 配置模型和优化器
+            目的: 创建包含模型和优化器配置的字典。
+    运行逻辑:
+        初始化 config_dict 字典，包含各种配置参数。
+        根据 attention_mode 和 gradient_dtype 更新配置。
+        如果训练文本编码器，设置文本编码器的学习率。
+        处理额外的网络参数。
+        根据 gradient_checkpointing 设置梯度检查点选项。
+        如果提供了 lora_path，则将其添加到配置中。
+        更新配置字典中的其他参数。
+        如果提供了 resume_args，则将其更新到配置中。
+        将配置字典中的参数设置到 args 命名空间中。
+    """
         config_dict = {
             "sample_prompts": prompts,
             "save_precision": save_dtype,
@@ -817,7 +848,7 @@ extra_pnginfo: 额外的PNG信息，用于传递额外的PNG信息。
             additional_network_args.append("train_blocks=single")
         if block_args:
             additional_network_args.append(block_args["include"])
-        
+        ### 添加额外的参数
         # Handle network_args in args Namespace
         if hasattr(args, 'network_args') and isinstance(args.network_args, list):
             args.network_args.extend(additional_network_args)
@@ -843,7 +874,8 @@ extra_pnginfo: 额外的PNG信息，用于传递额外的PNG信息。
 
         for key, value in config_dict.items():
             setattr(args, key, value)
-        
+        """7. 创建输出文件夹及保存训练参数文件
+        创建两个 JSON 文件来存储当前会话的所有训练信息：一个用于存储所有必要的命令线 参数 (args.json)；另一个用于存储任何附加的工作流元数据(workflow.json)。这些文件对于重现实验非常有用，并且可以方便地查看当前会话的所有关键设置信息。"""
         saved_args_file_path = os.path.join(output_dir, f"{output_name}_args.json")
         with open(saved_args_file_path, 'w') as f:
             json.dump(vars(args), f, indent=4)
@@ -857,11 +889,16 @@ extra_pnginfo: 额外的PNG信息，用于传递额外的PNG信息。
         with open(saved_workflow_file_path, 'w') as f:
             json.dump(metadata, f, indent=4)
 
+        """11. 初始化训练器
+        始化FluxNetworkTrainer对象并开始训练。禁用推理模式。
+        创建 FluxNetworkTrainer 对象。
+        调用 init_train 方法初始化训练器并开始训练。"""
         #pass args to kohya and initialize trainer
         with torch.inference_mode(False):
             network_trainer = FluxNetworkTrainer()
             training_loop = network_trainer.init_train(args)
 
+        """12. 开始训练"""
         epochs_count = network_trainer.num_train_epochs
 
         trainer = {
@@ -1225,15 +1262,31 @@ class FluxTrainLoop:
     CATEGORY = "FluxTrainer"
 
     def train(self, network_trainer, steps):
+        """该函数的主要目的是执行训练循环，并在指定的步数内进行训练。它通过更新训练器对象和当前全局步数来实现这一目标。"""
+        """1. 初始化训练环境
+        确保处于训练模式（非推理模式）。
+        获取训练器和训练循环对象。
+        获取当前全局步数。
+        """
         with torch.inference_mode(False):
             training_loop = network_trainer["training_loop"]
             network_trainer = network_trainer["network_trainer"]
             initial_global_step = network_trainer.global_step
 
+            """2. 设置目标全局步数
+            计算目标全局步数，即当前全局步数加上训练步数。确定在本次调用中需要达到的目标全局步数。"""
             target_global_step = network_trainer.global_step + steps
+
+            """3. 创建进度条
+            创建一个进度条，用于显示训练进度。"""
             comfy_pbar = comfy.utils.ProgressBar(steps)
             network_trainer.comfy_pbar = comfy_pbar
 
+            """4. 执行优化器函数并开始循环
+            调用 network_trainer.optimizer_train_fn() 初始化优化器。
+            进入循环，直到 network_trainer.global_step 达到 target_global_step。
+            在每次循环中，调用 training_loop 函数进行训练，并传入 break_at_steps 和 epoch 参数。
+            如果 network_trainer.global_step 达到 network_trainer.args.max_train_steps，则跳出循环。"""
             network_trainer.optimizer_train_fn()
 
             while network_trainer.global_step < target_global_step:
